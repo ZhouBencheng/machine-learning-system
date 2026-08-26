@@ -9,7 +9,7 @@
 | 材料 | 内容 | 是否启动训练 |
 |------|------|--------------|
 | 导学（本文件） | 实验目标、ModelArts 环境创建、启动前检查清单、提交要求 | 否 |
-| 代码文件 `Lab6_mindspeed_training_config_and_launch.ipynb` | 五步闭环：下载权重数据、环境检查、权重转换、数据预处理、torchrun 启动训练、日志解析 | 是 |
+| 代码文件 `Lab6_mindspeed_training_config_and_launch.ipynb` | 五步闭环：环境检查、权重转换、数据预处理、torchrun 启动训练、日志解析（另需提前下载权重与数据） | 是 |
 
 实验目标三项：
 
@@ -98,7 +98,7 @@
 | ⑦ | MASTER_ADDR / MASTER_PORT 正确 | 单机用 localhost + 未占用端口 | Step 4 启动训练 |
 | ⑧ | 输出目录可写 | 训练脚本能创建输出目录并写日志 | Step 4 启动训练 |
 
-**第⑥项显存估算**：Qwen2.5-7B 总参数约 7.6B，按 TP=2 PP=2 切分后每卡约 1.9B 参数。bf16 训练加 AdamW 优化器，每参数约 20 字节，模型部分约 38GB，加上激活值（seq=8192、已开启重计算，占比很小）和运行开销，每卡约 42GB / 64GB，满足要求。显存不足时三个调整方向：减小 seq_length、增大 TP 或 PP、开启重计算。
+**第⑥项显存估算**：Qwen2.5-7B 总参数约 7.6B，按 TP=2 PP=2 切分后每卡约 1.9B 参数。bf16 训练加 AdamW 优化器，每参数约 20 字节，模型部分约 38GB，加上激活值（seq=8192、已开启重计算，占比很小）和运行开销，每卡约 42GB / 64GB，满足要求。显存不足时的调整方向：先减小 seq_length。还不够就改用更强的切分组合（如 TP=4 PP=1，每卡参数减半，需从权重转换那一步重新做起）。
 
 ## 实验流程
 
@@ -115,7 +115,7 @@
 
 在代码文件中按顺序执行，每个步骤前有说明文字。训练命令在 JupyterLab 终端（菜单 File → New → Terminal）执行。终端里 `cd /home/ma-user/MA_Turbo/src/open_source/MindSpeed-LLM` 后再 `bash` 启动脚本。
 
-训练正常启动的标志是日志里出现 `iteration 1 | lm loss: 10.x`。默认 100 步约 1.5-2 小时。如需先快速验证全链路，可把 `train-iters` 临时改小（如 10），跑通后再改回 100 重新生成脚本。
+训练正常启动的标志是日志里出现 `iteration 1` 行，且带 `lm loss` 数值。默认 100 步约 1.5-2 小时。如需先快速验证全链路，可把 `train-iters` 临时改小（如 10），跑通后再改回 100 重新生成脚本。
 
 ### 常见问题
 
@@ -149,7 +149,7 @@ v2.2.0 的 `convert_ckpt_v2.py` 不支持 qwen25，要用旧版 `convert_ckpt.py
 
 1. **算**：并行配置记录，包括你使用的 TP/PP/DP、MBS/GBS、GAS 计算过程、显存估算结果。
 2. **跑**：训练日志摘录，开头 10 步和最后 10 步的日志，标注 lm loss、吞吐、单步耗时三个指标。
-3. **看**：性能数据，包括最终 loss、平均吞吐（tokens/s/p 或 TFLOP/s/GPU）、平均单步耗时、显存占用（`npu-smi info` 截图）。
+3. **看**：性能数据，包括最终 loss、平均吞吐（tokens/s/p 或 TFLOP/s/卡）、平均单步耗时、显存占用（`npu-smi info` 截图）。
 4. **想**：结论与反思，配置是否合理、遇到什么问题、怎么解决的，以及如果换 TP=4 PP=1 会怎样。
 
 目录组织：根目录以姓名拼音命名，下分 `config/`（你实际使用的启动脚本）、`logs/`（训练日志原文件）、`report.md`（实验报告）、`images/`（截图）。
@@ -159,4 +159,5 @@ v2.2.0 的 `convert_ckpt_v2.py` 不支持 qwen25，要用旧版 `convert_ckpt.py
 ## 参考链接
 
 - MindSpeed-LLM 官方仓库：https://github.com/Ascend/MindSpeed-LLM
+- 本实验对齐的官方脚本：仓库 `examples/mcore/qwen25/pretrain_qwen25_7b_32k_ptd.sh`（v2.2.0）
 - 华为云 ModelArts 文档：https://support.huaweicloud.com/modelarts/
