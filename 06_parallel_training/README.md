@@ -159,5 +159,5 @@ v2.2.0 的 `convert_ckpt_v2.py` 不支持 qwen25，要用旧版 `convert_ckpt.py
 ## 参考链接
 
 - MindSpeed-LLM 官方仓库：https://github.com/Ascend/MindSpeed-LLM
-- 本实验对齐的官方脚本：仓库 `examples/mcore/qwen25/pretrain_qwen25_7b_32k_ptd.sh`（v2.2.0）
+- 本实验对齐的官方脚本：[pretrain_qwen25_7b_32k_ptd.sh（MindSpeed-LLM v2.2.0 标签）](https://github.com/Ascend/MindSpeed-LLM/blob/v2.2.0/examples/mcore/qwen25/pretrain_qwen25_7b_32k_ptd.sh)
 - 华为云 ModelArts 文档：https://support.huaweicloud.com/modelarts/
