@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { width: 1400px; height: 560px; background: #ffffff;
+         font-family: "Microsoft YaHei", "PingFang SC", sans-serif; }
+  .wrap { padding: 46px 50px; height: 100%; display: flex; align-items: center; gap: 44px; }
+  .hf { flex: none; width: 400px; }
+  .hf .box { height: 330px; background: #e7f5ff; border: 5px solid #1864ab; border-radius: 16px;
+             display: flex; flex-direction: column; align-items: center; justify-content: center;
+             color: #1864ab; }
+  .hf .t1 { font-size: 46px; font-weight: bold; }
+  .hf .t2 { font-size: 36px; color: #495057; margin-top: 14px; }
+  .hf .cap { text-align: center; color: #495057; font-size: 32px; margin-top: 16px; }
+  .mid { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .mid .lbl { color: #1864ab; font-size: 38px; font-weight: bold; }
+  .mid .ar { width: 0; height: 0; border-left: 46px solid #1971c2; border-top: 30px solid transparent;
+             border-bottom: 30px solid transparent; }
+  .mid .sub { color: #495057; font-size: 30px; text-align: center; line-height: 1.5; }
+  .mg { flex: none; }
+  .mg table { border-collapse: collapse; }
+  .mg th, .mg td { border: 5px solid #1864ab; text-align: center; }
+  .mg th { background: #1864ab; color: #ffffff; font-size: 34px; padding: 10px 26px; }
+  .mg td { background: #d0ebff; color: #1864ab; font-size: 34px; font-weight: bold;
+           padding: 22px 26px; }
+  .mg .rowlab { background: #1864ab; color: #ffffff; font-weight: bold; }
+  .mg .cap { text-align: center; color: #495057; font-size: 32px; margin-top: 16px; line-height: 1.5; }
+  .mg .cap b { color: #C7000B; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hf">
+      <div class="box">
+        <div class="t1">Qwen2.5-7B 权重</div>
+        <div class="t2">HuggingFace 格式 · 整块存储</div>
+      </div>
+      <div class="cap">所有参数存在一起</div>
+    </div>
+    <div class="mid">
+      <div class="lbl">权重转换</div>
+      <div class="ar"></div>
+      <div class="sub">TP 按列切分<br>PP 按层切分</div>
+    </div>
+    <div class="mg">
+      <table>
+        <tr><th></th><th>TP0</th><th>TP1</th></tr>
+        <tr><td class="rowlab">Stage0</td><td>分片 1</td><td>分片 2</td></tr>
+        <tr><td class="rowlab">Stage1</td><td>分片 3</td><td>分片 4</td></tr>
+      </table>
+      <div class="cap">Megatron 格式：<b>TP×PP = 2×2 = 4 个分片</b><br>对应 mp_rank_01 ~ 04，4 张卡各加载 1 个</div>
+    </div>
+  </div>
+</body>
+</html>
