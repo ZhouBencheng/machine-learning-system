@@ -1,9 +1,3 @@
----
-version: v0.1
-owner: 待填
-reviewer: 待填
-updated: 2026-08-05
----
 
 # 实验 8　ONNX / ATC / OM 模型转换
 
