@@ -1,0 +1,147 @@
+# 08.01 练习答案
+
+标注 `[需实测]` 的题目需要记录本机实际输出。这里给出判断方式和参考格式，不预填具体数值。
+
+## 1　改成动态 batch 重新导出
+
+导出时增加 `dynamic_axes`，其余不变：
+
+```python
+model.eval()
+torch.onnx.export(
+    model,
+    torch.randn(1, 3, 32, 32),
+    "l08_workspace/demo_model_dyn.onnx",
+    input_names=["input"],
+    output_names=["output"],
+    opset_version=11,
+    dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+)
+```
+
+用 5.2 的 `describe()` 读回，输入行的第 0 维从 `1` 变成字符串 `batch`：
+
+```text
+输入 input    FLOAT    ['batch', 3, 32, 32]
+输出 output   FLOAT    ['batch', 10]
+```
+
+要点：`dim_value` 为 0 且 `dim_param` 非空，表示这一维是符号维。静态维在 protobuf 里存数值，动态维存名字，`describe()` 里 `d.dim_param if d.dim_param else d.dim_value` 就是在区分这两种情况。
+
+`dummy_input` 的 batch 仍写 1。它只用于 trace，声明为动态的维度不受它约束。
+
+注意输出的 batch 维也要一起声明。只声明输入会导致输出 batch 被固化成 1，后续 ATC 转换时报 shape 推导不一致。
+
+---
+
+## 2　去掉 `model.eval()` 后运行对比
+
+只删除导出前的 `model.eval()` 时，对比通常仍会通过。常见 PyTorch 版本中，`torch.onnx.export` 的 `training` 默认值为 `TrainingMode.EVAL`，导出器会在 trace 期间临时使用 eval 模式。因此，导出的 ONNX 不含 Dropout，BatchNorm 使用 running stats。
+
+可在实验环境中用 `inspect.signature(torch.onnx.export)` 核对该版本的默认值。
+
+若要观察差异，可采用以下两种方式。
+
+让参照侧保持 train 模式：
+
+```python
+model.train()                      # 参照侧用 train 模式
+with torch.no_grad():
+    torch_out = model(torch.from_numpy(x_np)).numpy()
+```
+
+`assert_allclose` 会抛出 `AssertionError`，误差可达 1e-1 量级。参照侧的 Dropout 随机置零部分激活值，而 ONNX 侧使用 eval 模式。
+
+也可以显式要求按 train 模式导出：
+
+```python
+from torch.onnx import TrainingMode
+torch.onnx.export(..., training=TrainingMode.TRAINING)
+```
+
+导出的 ONNX 会保留 Dropout 节点，两侧推理都带随机性。
+
+还要留意 BatchNorm 的 running_mean / running_var。在 train 模式下执行前向会更新这些统计量；之后的两侧推理仍可能对齐，却使用了已变化的统计量。导出前显式调用 `model.eval()` 可以固定这一路径的模型状态。
+
+---
+
+## 3　`--input_shape` 输入名写错 **[需实测]**
+
+把 6.3 的命令改为一个不存在的输入名：
+
+```bash
+--input_shape="inputs:1,3,32,32"        # 模型里实际叫 input
+```
+
+ATC 会以非零退出码结束，报错属于“输入节点未找到”一类。记录完整日志，至少保留错误码（`E` 开头）和错误描述行。
+
+报错为什么指向这里：ATC 解析 ONNX 后得到图的输入节点列表，再用 `--input_shape` 里的名字去这个列表里查找并绑定 shape。名字查不到，绑定阶段就失败，此时模型解析已经完成，所以报错发生在参数处理阶段而非解析阶段。
+
+可从 ONNX 模型中读取输入名，再生成 `--input_shape`，避免手动抄写。
+
+---
+
+## 4　ONNX 与 OM 的体积对比 **[需实测]**
+
+填写实测值：
+
+| 文件 | 大小 |
+| --- | --- |
+| `demo_model.onnx` | |
+| `demo_model.om`（默认精度） | |
+| `demo_model_fp32.om`（`must_keep_origin_dtype`） | |
+
+差异来源有三项，方向不一致：
+
+**权重精度：**默认精度模式常见为 `force_fp16`，FP32 权重转成 FP16 后这部分减半。
+
+**权重重排：**为匹配达芬奇架构的访存特性，权重会转成分形格式（如 NC1HWC0）。重排需要按 16 或 32 对齐补零，通道数不是对齐倍数时会产生填充。DemoNet 的 8 通道会补到 16。
+
+**执行调度信息：**OM 还包含算子的 tiling 参数、内存分配方案和任务下发序列。
+
+OM 与 ONNX 的体积关系取决于模型规模、权重精度和调度信息。小模型上调度信息与填充占比更高；大模型中 FP16 权重压缩的影响更明显。
+
+对照 `must_keep_origin_dtype` 那一版：它保持 FP32，与默认版的差值基本就是权重精度那一项的贡献。
+
+---
+
+## 5　`if` 分支依赖输入数值时 trace 会怎样
+
+**会发生什么。** trace 是"喂一个输入跑一次前向，记录实际走过的算子"。`if` 的条件在 trace 时被求值成一个具体的布尔量，只有取到的那一支被记录进 ONNX，另一支彻底消失。导出过程不报错，可能只有一条 `TracerWarning`。
+
+举例：
+
+```python
+def forward(self, x):
+    if x.sum() > 0:
+        return self.branch_a(x)
+    else:
+        return self.branch_b(x)
+```
+
+`dummy_input` 恰好让 `x.sum() > 0` 成立，导出的 ONNX 就只有 `branch_a`。之后无论输入什么，OM 永远走 `branch_a`。这类问题在链路上不会被任何一步拦住：ONNX 结构合法、ATC 转换成功、msame 对齐也通过——因为对齐用的输入同样走 `branch_a`。只有换到会走另一支的输入时结果才是错的。
+
+可根据模型结构选择处理方式。
+
+改成无分支的等价写法。两支都算，用 `torch.where` 选：
+
+```python
+def forward(self, x):
+    cond = (x.sum() > 0)
+    return torch.where(cond, self.branch_a(x), self.branch_b(x))
+```
+
+两条分支都会参与计算。分支计算量较小时，这种写法能保留静态图。
+
+用 `torch.jit.script` 编译含分支的部分。script 做真正的语法分析，能把 `if` 保留成 ONNX 的 `If` 算子：
+
+```python
+scripted = torch.jit.script(model)
+torch.onnx.export(scripted, dummy_input, "model.onnx", opset_version=11)
+```
+
+需要确认 CANN 是否支持 `If` 算子。动态控制流会限制 ATC 的融合优化，script 也对模型代码有额外要求。
+
+拆成多个模型，把分支判断放到 Python 侧。业务代码里判断走哪支，分别加载对应的 OM。控制流完全脱离模型，每个 OM 都是纯静态的、可充分优化。代价是要管理多个 OM 和加载逻辑。
+
+分支由配置项决定时，可拆成多个模型；数据相关且计算量较小时，可使用 `torch.where`；需要在模型内部保留数据相关控制流时，再考虑 script。

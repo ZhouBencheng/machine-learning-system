@@ -1,0 +1,176 @@
+# 08.03 练习答案
+
+标注 `[需实测]` 的题目需要记录本机实际输出。
+
+## 1　三输入模型的 bin 准备与校验
+
+```python
+import numpy as np, os
+
+os.makedirs("l08_workspace/multi_in", exist_ok=True)
+np.random.seed(0)
+
+specs = [
+    ("00_input_ids",      np.random.randint(0, 1000, (1, 128)).astype(np.int64)),
+    ("01_attention_mask", np.ones((1, 128), dtype=np.int64)),
+    ("02_token_type_ids", np.zeros((1, 128), dtype=np.int64)),
+]
+
+for name, arr in specs:
+    path = "l08_workspace/multi_in/%s.bin" % name
+    arr.tofile(path)
+    expect = arr.size * arr.dtype.itemsize
+    actual = os.path.getsize(path)
+    print("%-20s %-10s %-8s 期望 %6d 实际 %6d %s" % (
+        name, arr.shape, arr.dtype, expect, actual,
+        "OK" if expect == actual else "不匹配"))
+```
+
+三个文件各 `128 × 8 = 1024` 字节。
+
+msame 按文件名排序后的顺序匹配输入。数字前缀可将顺序固定为 `00_input_ids`、`01_attention_mask`、`02_token_type_ids`。若直接使用原始名称，字母序会变成 `attention_mask`、`input_ids`、`token_type_ids`，与模型输入顺序不同；三个文件字节数相同时，msame 仍会读取它们。
+
+`input_ids` 是 int64 词表索引。若写成 float32，文件字节数会从 1024 变为 512，可通过 size 不匹配定位。
+
+校验时核对每个文件的字节数是否等于 `prod(shape) × dtype 字节宽`，并打印排序后的文件列表，人工确认其与模型输入顺序对应。
+
+---
+
+## 2　耗时四指标
+
+下面的示例数据使用 `warmup=5`，用于演示统计方法；实际数值以本机输出为准。
+
+```text
+原始数据（15 次，ms）
+12.83, 1.42, 1.38, 1.45, 1.39, 1.41, 1.37, 1.44, 1.40, 1.38, 1.43, 1.39, 1.41, 1.38, 1.42
+```
+
+| 指标 | 数值 | 算法 |
+| --- | --- | --- |
+| 首次时延 | 12.83 ms | `lat[0]` |
+| 含首次的平均 | 2.17 ms | 15 个值的平均 |
+| 去预热的平均 | 1.403 ms | 后 10 个值的平均 |
+| 标准差 | 0.022 ms | 后 10 个值 |
+| P95 | 1.44 ms | 后 10 个值 |
+| 吞吐 | 712.8 次/秒 | `1000 / 1.403` |
+
+首次 12.83 ms 是稳定态 1.403 ms 的 9 倍多，其中包含模型加载、显存分配和算子初始化。模型较小时，这些固定开销占比更高；预热次数应根据时延何时进入稳定区间确定。
+
+标准差为 0.022 ms，约为均值的 1.6%，说明这组数据抖动较小。P95 为 1.44 ms，与均值接近。若 P95 明显高于均值，可继续检查周期性的资源竞争。
+
+---
+
+## 3　三条报错的定位
+
+**`E19999: Inner Error, Not supported operator: GridSample`**
+
+阶段：ATC 转换。OM 尚未生成。
+
+原因：CANN 当前版本不支持 GridSample 算子。它常见于可变形卷积、光流和 STN 类结构。
+
+下一步：确认 ONNX 中该算子的 opset 版本，再尝试提高 `opset_version` 重新导出。有些算子在高版本 opset 中有标准实现。也可使用基础算子改写等价语义，例如用 `grid` 索引和双线性插值实现 GridSample；确有需要时再考虑自定义算子。
+
+**`Expected size: 12288, but given input size: 6144`**
+
+阶段：数据。OM 已生成，输入 bin 的字节数与模型输入不符。
+
+12288 是 `1×3×32×32×4`，也就是 float32 的 DemoNet 输入。给了 6144，正好是一半。两种可能：dtype 写成了 float16（`astype(np.float16)` 或 `dtype=np.float16`）；或者某一维少了一半，比如 shape 写成 `(1, 3, 32, 16)`。
+
+下一步：先算 `prod(shape) × dtype字节宽`，与文件实际大小比对，用课件 6 节的自查代码。数值是整数倍关系时基本都是 dtype 问题，因为 float16 对 float32 正好 2 倍、int8 对 float32 正好 4 倍。
+
+**`terminate called after throwing an instance of 'std::runtime_error'`（msame 启动瞬间）**
+
+阶段：环境。在启动瞬间抛、且是 C++ 层的未捕获异常，说明还没进到模型加载逻辑。
+
+原因：没 source `set_env.sh`，动态库找不到；或者 msame 编译时链接的 CANN 版本与运行时的不一致。
+
+下一步：用 `echo $ASCEND_TOOLKIT_HOME` 检查环境变量；用 `ldd $(which msame)` 查看缺失依赖。每个 notebook cell 是独立子进程，需要在调用前加载环境脚本。
+
+这三类错误分别位于转换、数据和环境阶段。先确定链路阶段，再检查该阶段的参数和日志。
+
+---
+
+## 4　双输出模型的 `--outputSize`
+
+输出 A：`(1, 1000)` float32；输出 B：`(1, 256, 14, 14)` float32。
+
+```text
+A: 1 × 1000 = 1000 元素 × 4 字节 = 4000 字节
+B: 1 × 256 × 14 × 14 = 50176 元素 × 4 字节 = 200704 字节
+```
+
+留 20% 余量：
+
+```bash
+--outputSize "4800,240844"
+```
+
+（`4000 × 1.2 = 4800`，`200704 × 1.2 = 240844.8`，取整 240844）
+
+输出顺序应与模型的 `graph.output` 一致，可通过 `onnx.load` 或 ATC 转换日志确认。
+
+`--outputSize` 是动态 shape 的输出 buffer 上限。按动态维的最大取值计算，并预留余量；静态 shape 可使用精确值。过大的 buffer 会占用额外设备内存。
+
+---
+
+## 5　输入 bin 少 4 字节 **[需实测]**
+
+制造错误：
+
+```python
+import numpy as np
+x = np.random.randn(1, 3, 32, 32).astype(np.float32)
+x.ravel()[:-1].tofile("l08_workspace/input_short.bin")   # 少一个 float32
+```
+
+`12288 - 4 = 12284` 字节。跑 msame 后记录完整报错。
+
+预期报 size 不匹配错误，期望值为 12288，实际值为 12284。msame 会在加载输入前核对字节数。
+
+字节数检查无法判断语义。文件顺序错误、同字节宽度但不同 dtype，或维度排列不同，都可能保留相同字节数。`--input_format` 配置也应与模型输入保持一致。
+
+---
+
+## 6　核对 `msame --help` **[需实测]**
+
+```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+msame --help > msame_help.txt
+```
+
+| 参数 | 本机是否存在 | 说明与课件的差异 |
+| --- | --- | --- |
+| `--model` | | |
+| `--input` | | |
+| `--output` | | |
+| `--outfmt` | | |
+| `--loop` | | |
+| `--dymShape` | | |
+| `--outputSize` | | |
+| `--dymBatch` | | |
+
+重点确认省略 `--input` 时的填充数据、是否有独立 warmup 参数，以及 `--dymBatch` 的参数名和取值格式。
+
+msame 的参数会随版本变化。使用本机 `msame --help` 核对参数名称和取值。
+
+---
+
+## 7　随机输入为什么可能掩盖问题
+
+随机输入常覆盖不到数据相关的控制流。若模型中的 `if` 依赖输入数值，trace 只会记录本次执行的分支；需要用能触发不同分支的样本检查模型。
+
+FP16 的溢出和下溢取决于数值范围。FP16 的表示范围为 ±65504，最小正规数约为 6e-5。真实数据可能产生更大的激活值，进而出现 inf 或 0。
+
+随机输入下的 logits 可能接近，argmax 一致不能充分说明精度。INT8 校准也依赖真实数据的数值分布。
+
+精度验证、动态范围检查、数据相关控制流和量化模型应使用真实数据。随机输入适合链路连通性、耗时、吞吐和显存占用的初步检查。
+
+---
+
+## 8　msame 对齐后仍需检查的内容
+
+msame 比较单样本的前向输出。业务指标还受部署侧预处理、后处理和数据分布影响。
+
+预处理的 resize 插值、归一化 mean/std、通道顺序与 padding 策略应与训练时一致。NMS、置信度阈值、anchor 解码和 softmax 温度通常位于模型外部，也会影响业务指标。
+
+困难样本上的 FP16 误差、未覆盖的动态 shape 档位、batch 大于 1 的执行路径，以及长时间运行时的资源状态，都应通过数据集级评测或针对性测试检查。
