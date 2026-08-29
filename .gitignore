@@ -1,3 +1,20 @@
 .claude/
 .opencode/
 .agents/
+
+# 模型与运行产物
+models/
+cache/
+configs/
+logs/
+pids/
+runtime/
+state/
+kernel_meta/
+kernel_meta_temp_*/
+
+# 本地凭据与 Notebook 临时文件
+*.pem
+*.docx
+.ipynb_checkpoints/
+__pycache__/
